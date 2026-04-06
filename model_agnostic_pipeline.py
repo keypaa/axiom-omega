@@ -50,16 +50,16 @@ class AxiomPipeline:
         try:
             temp_config = AutoConfig.from_pretrained(self.config.model_name)
             self.model_info = ModelRegistry.get(self.config.model_name, temp_config)
-            print(f"  ✓ Detected: {self.model_info.family} architecture")
-            print(f"  ✓ Default layers: {self.model_info.default_target_layers}")
+            print(f"  [OK] Detected: {self.model_info.family} architecture")
+            print(f"  [OK] Default layers: {self.model_info.default_target_layers}")
 
             # Use detected layers if not specified
             if self.config.target_layers is None:
                 self.config.target_layers = self.model_info.default_target_layers
-                print(f"  ✓ Using auto-selected layers: {self.config.target_layers}")
+                print(f"  [OK] Using auto-selected layers: {self.config.target_layers}")
 
         except Exception as e:
-            print(f"  ✗ Failed to detect architecture: {e}")
+            print(f"  [ERROR] Failed to detect architecture: {e}")
             sys.exit(1)
 
     def run(self):
