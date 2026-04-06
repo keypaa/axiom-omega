@@ -340,14 +340,14 @@ def main():
     print("\n[2/5] Training/loading probes for each layer...")
 
     probes = {}
-    probe_path_template = ckpt / "refusal_probe_l{layer:02d}.pt"
+    probe_path_template = phase1_dir / "refusal_probe_l{layer:02d}.pt"
 
     for layer in target_layers:
         h_r = layer_data[layer]["h_r"]
         h_c = layer_data[layer]["h_c"]
         d_model = h_r.shape[1]
 
-        probe_path = ckpt / f"refusal_probe_l{layer:02d}.pt"
+        probe_path = phase1_dir / f"refusal_probe_l{layer:02d}.pt"
 
         if args.skip_probe_training and probe_path.exists():
             print(f"  Layer {layer}: Loading existing probe...")
