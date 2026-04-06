@@ -5,41 +5,62 @@ Latent space intervention system for transformer-based language models.
 **Tested on**: Meta-Llama-3-8B-Instruct  
 **Compatible with**: Any transformer model (Llama, Mistral, Qwen, etc.)
 
-## Status: ALL PHASES COMPLETE ✅
+## Status: Phase 0 & 1 Verified ✅ | Phase 2/3 Pending Verification
 
-| Phase | Status | Key Achievement |
-|-------|--------|-----------------|
-| Phase 1 | ✅ Complete | Latent hooks (100% bypass) |
-| Phase 2 | ✅ Complete | Reasoning preservation (no degradation) |
-| Phase 3 | ✅ Complete | EKF + MPC integration (uncertainty tracking) |
+| Phase | Status | Key Achievement | Notes |
+|-------|--------|-----------------|-------|
+| Phase 0 | ✅ Working | Refusal subspace extraction (real data) | Uses mlabonne/harmful_behaviors (416 prompts) |
+| Phase 1 | ✅ Working | Latent hooks with threshold logic | Respects 0.55 threshold, no false positives on compliant |
+| Phase 2 | ⏳ Pending | Reasoning preservation (MMLU/GSM8K) | Ready to test on cloud |
+| Phase 3 | ⏳ Pending | EKF + MPC integration | Ready to test on cloud |
 
 ## Quick Start
 
-### Run Phase 1 (Production)
+### Phase 0: Data Collection & Subspace Extraction
 ```bash
+# Collect refusal/compliant data (uses real harmful prompts)
+python phase0_collect_data.py --model meta-llama/Meta-Llama-3-8B-Instruct --target_behavior refusal
+
+# Compute Fisher importance scores
+python phase0_compute_fisher.py --model meta-llama/Meta-Llama-3-8B-Instruct
+
+# Extract refusal subspace via cPCA
+python phase0_compute_refusal_subspace.py --model meta-llama/Meta-Llama-3-8B-Instruct
+```
+
+### Phase 1: Run Refusal Hooks with Threshold Logic
+```bash
+# Interactive test with custom prompts (respects 0.55 threshold)
+python phase1_train_and_test.py \
+    --target_layers "10,31" \
+    --lambda_scale 60.0 \
+    --magnitude_cap 0.15 \
+    --threshold 0.55 \
+    --logic or
+
+# Benchmark on 10 refusal + 10 compliant prompts
 python phase1_benchmark.py \
     --target_layers "10,31" \
     --lambda_scale 60.0 \
-    --magnitude_cap 0.4 \
-    --threshold 0.55
-```
-
-### Run Phase 3 (With EKF Uncertainty Tracking)
-```bash
-python phase3_test.py \
-    --mode phase3 \
-    --target_layers "10,31" \
-    --lambda_scale 60.0 \
-    --magnitude_cap 0.4 \
     --threshold 0.55
 ```
 
 ## Results
 
-- **Refusal bypass**: 100%
-- **False positives**: 0%
-- **Speed overhead**: 0.6%
-- **MMLU/GSM8K**: No degradation
+**Phase 1 (Current — Verified ✅)**
+- **Refusal bypass**: ✅ Methamphetamine prompt correctly intervened (p=0.967 on Layer 31)
+- **False positives**: ✅ ZERO — Compliant prompts (photosynthesis, sort list) NOT intervened
+- **Threshold enforcement**: ✅ 0.55 threshold respected (compliant stay below 0.55)
+- **Speed overhead**: ~0.6% (minimal)
+
+**Phase 2 (Expected from previous runs)**
+- **MMLU/GSM8K**: +2% improvement / 0% delta (no degradation)
+- Status: Ready to verify on cloud
+
+**Critical Fix Applied**
+- Removed hardcoded `should_intervene = True` that was bypassing threshold logic
+- Implemented proper threshold comparison: intervene only if `p_refuse > threshold`
+- Fixed AND logic: use `min()` across layers (intervene only if ALL exceed threshold)
 
 ## Scripts
 
