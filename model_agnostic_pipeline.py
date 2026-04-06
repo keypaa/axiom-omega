@@ -11,6 +11,7 @@ This orchestrates all phases (0-5) for any model and behavior.
 
 import argparse
 import sys
+import subprocess
 from pathlib import Path
 from typing import Optional
 import json
@@ -114,11 +115,56 @@ class AxiomPipeline:
         print("PHASE 0: Data Collection & Subspace Computation")
         print("=" * 60)
 
-        # TODO: Implement based on existing phase0_* scripts
-        print("  [TODO] Implement Phase 0 data collection pipeline")
-        print(f"  - Model: {self.config.model_name}")
-        print(f"  - Target layers: {self.config.target_layers}")
-        print(f"  - Behavior: {self.config.target_behavior}")
+        # Step 1: Collect data (calibration + alignment)
+        print("\n  [1/3] Collecting calibration and alignment datasets...")
+        cmd = [
+            "python",
+            "phase0_collect_data.py",
+            "--model",
+            self.config.model_name,
+            "--target_behavior",
+            self.config.target_behavior,
+        ]
+        result = subprocess.run(cmd, check=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Phase 0 data collection failed")
+
+        # Step 2: Compute Fisher + Sacred Subspace
+        print("\n  [2/3] Computing Fisher importance + Sacred Subspace...")
+        target_layers_str = (
+            ",".join(map(str, self.config.target_layers))
+            if self.config.target_layers
+            else "auto"
+        )
+        cmd = [
+            "python",
+            "phase0_compute_fisher.py",
+            "--model",
+            self.config.model_name,
+            "--target_behavior",
+            self.config.target_behavior,
+            "--target_layers",
+            target_layers_str,
+        ]
+        result = subprocess.run(cmd, check=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Phase 0 Fisher computation failed")
+
+        # Step 3: Compute Refusal Subspace
+        print("\n  [3/3] Computing Refusal Subspace (cPCA)...")
+        cmd = [
+            "python",
+            "phase0_compute_refusal_subspace.py",
+            "--model",
+            self.config.model_name,
+            "--target_behavior",
+            self.config.target_behavior,
+        ]
+        result = subprocess.run(cmd, check=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Phase 0 refusal subspace computation failed")
+
+        print("\n  ✓ Phase 0 complete")
 
     def phase1_train_and_benchmark(self):
         """
@@ -133,10 +179,32 @@ class AxiomPipeline:
         print("PHASE 1: Probe Training & Intervention")
         print("=" * 60)
 
-        print("  [TODO] Implement Phase 1 probe training")
-        print(f"  - Lambda scale: {self.config.lambda_scale}")
-        print(f"  - Threshold: {self.config.threshold}")
-        print(f"  - Magnitude cap: {self.config.magnitude_cap}")
+        target_layers_str = (
+            ",".join(map(str, self.config.target_layers))
+            if self.config.target_layers
+            else "auto"
+        )
+        cmd = [
+            "python",
+            "phase1_train_and_test.py",
+            "--model",
+            self.config.model_name,
+            "--target_behavior",
+            self.config.target_behavior,
+            "--target_layers",
+            target_layers_str,
+            "--lambda_scale",
+            str(self.config.lambda_scale),
+            "--threshold",
+            str(self.config.threshold),
+            "--magnitude_cap",
+            str(self.config.magnitude_cap),
+        ]
+        result = subprocess.run(cmd, check=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Phase 1 probe training failed")
+
+        print("\n  ✓ Phase 1 complete")
 
     def phase2_reasoning_benchmark(self):
         """
@@ -151,7 +219,32 @@ class AxiomPipeline:
         print("PHASE 2: Reasoning Preservation Benchmark")
         print("=" * 60)
 
-        print("  [TODO] Implement Phase 2 reasoning benchmarks")
+        target_layers_str = (
+            ",".join(map(str, self.config.target_layers))
+            if self.config.target_layers
+            else "auto"
+        )
+        cmd = [
+            "python",
+            "phase2_reasoning_benchmark.py",
+            "--model",
+            self.config.model_name,
+            "--checkpoint_dir",
+            str(Path(self.config.checkpoint_dir) / self.config.model_short_name),
+            "--target_layers",
+            target_layers_str,
+            "--lambda_scale",
+            str(self.config.lambda_scale),
+            "--threshold",
+            str(self.config.threshold),
+            "--magnitude_cap",
+            str(self.config.magnitude_cap),
+        ]
+        result = subprocess.run(cmd, check=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Phase 2 reasoning benchmark failed")
+
+        print("\n  ✓ Phase 2 complete")
 
     def phase3_dynamic_control(self):
         """
@@ -166,7 +259,30 @@ class AxiomPipeline:
         print("PHASE 3: Dynamic Control (EKF + MPC)")
         print("=" * 60)
 
-        print("  [TODO] Implement Phase 3 EKF + MPC")
+        target_layers_str = (
+            ",".join(map(str, self.config.target_layers))
+            if self.config.target_layers
+            else "auto"
+        )
+        cmd = [
+            "python",
+            "phase3_dynamic_control.py",
+            "--model",
+            self.config.model_name,
+            "--checkpoint_dir",
+            str(Path(self.config.checkpoint_dir) / self.config.model_short_name),
+            "--target_layers",
+            target_layers_str,
+            "--lambda_scale",
+            str(self.config.lambda_scale),
+            "--threshold",
+            str(self.config.threshold),
+        ]
+        result = subprocess.run(cmd, check=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Phase 3 dynamic control failed")
+
+        print("\n  ✓ Phase 3 complete")
 
     def phase4_anticipatory_memory(self):
         """Phase 4: Add EMA memory for anticipatory intervention"""
@@ -174,7 +290,26 @@ class AxiomPipeline:
         print("PHASE 4: Anticipatory Memory")
         print("=" * 60)
 
-        print("  [TODO] Implement Phase 4 EMA memory integration")
+        target_layers_str = (
+            ",".join(map(str, self.config.target_layers))
+            if self.config.target_layers
+            else "auto"
+        )
+        cmd = [
+            "python",
+            "phase4_anticipatory.py",
+            "--model",
+            self.config.model_name,
+            "--checkpoint_dir",
+            str(Path(self.config.checkpoint_dir) / self.config.model_short_name),
+            "--target_layers",
+            target_layers_str,
+        ]
+        result = subprocess.run(cmd, check=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Phase 4 anticipatory memory failed")
+
+        print("\n  ✓ Phase 4 complete")
 
     def phase5_attention_rewiring(self):
         """Phase 5: Low-rank attention bias injection"""
@@ -182,7 +317,26 @@ class AxiomPipeline:
         print("PHASE 5: Attention Rewiring")
         print("=" * 60)
 
-        print("  [TODO] Implement Phase 5 attention bias hooks")
+        target_layers_str = (
+            ",".join(map(str, self.config.target_layers))
+            if self.config.target_layers
+            else "auto"
+        )
+        cmd = [
+            "python",
+            "phase5_attention_rewiring.py",
+            "--model",
+            self.config.model_name,
+            "--checkpoint_dir",
+            str(Path(self.config.checkpoint_dir) / self.config.model_short_name),
+            "--target_layers",
+            target_layers_str,
+        ]
+        result = subprocess.run(cmd, check=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Phase 5 attention rewiring failed")
+
+        print("\n  ✓ Phase 5 complete")
 
     def _save_results(self):
         """Save configuration and results"""
