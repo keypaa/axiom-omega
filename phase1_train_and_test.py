@@ -174,25 +174,26 @@ class Phase1HookLayer10:
     def __call__(self, module, input, output):
         h = output[0]  # [batch, seq, d_model]
 
-        # Get per-layer predictions for AND logic
+        # Get per-layer predictions for threshold logic
         if self.logic == "and" and self.ensemble_probe is not None:
             per_layer_results = self.ensemble_probe.forward_per_layer(h)
             # Store all layer scores
             self._layer_p_refuses = {
                 layer: float(p.max().item()) for layer, p in per_layer_results
             }
-            # Use max across all layers for display
-            p_refuse = max(self._layer_p_refuses.values())
+            # For AND logic: intervene only if ALL layers exceed threshold
+            # Use min for AND (most conservative)
+            p_refuse = min(self._layer_p_refuses.values())
             self.last_p_refuse = p_refuse
         else:
-            # OR logic (default)
+            # OR logic (default): intervene if ANY layer exceeds threshold
             p_refuse = self.probe(h)  # [batch, 1]
             self.last_p_refuse = float(p_refuse.max().item())
 
         self.last_delta_norm = 0.0  # reset each call
 
-        # EMPIRICAL TEST: Always intervene (skip threshold check)
-        should_intervene = True
+        # Threshold check: intervene only if p_refuse exceeds threshold
+        should_intervene = self.last_p_refuse > self.threshold
 
         if not should_intervene:
             self.intervened = False
