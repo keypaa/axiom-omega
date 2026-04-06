@@ -686,7 +686,7 @@ def main():
     print("\nData manifest:")
     for f in sorted(phase0_dir.rglob("*.jsonl")):
         n_lines = sum(1 for _ in open(f))
-        print(f"  {f.relative_to(phase0_dir):<50} {n_lines:>4} records")
+        print(f"  {str(f.relative_to(phase0_dir)):<50} {n_lines:>4} records")
 
     print("\nNext step: run phase0_compute_fisher.py")
 
