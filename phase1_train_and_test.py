@@ -210,8 +210,8 @@ class Phase1HookLayer10:
         # Rank-1 deflation: remove the refusal component
         # proj_coeff: [batch, seq, 1]  — how much of h lies along v
         proj_coeff = (h @ v).unsqueeze(-1)
-        # Correction: subtract the refusal component
-        delta_h = -self.lambda_scale * proj_coeff * v.unsqueeze(0).unsqueeze(0)
+        # Correction: try opposite direction (add instead of subtract)
+        delta_h = +self.lambda_scale * proj_coeff * v.unsqueeze(0).unsqueeze(0)
 
         # Project through Sacred Subspace (Δh ⊥ S)
         safe_delta = delta_h @ P  # [batch, seq, d_model]
