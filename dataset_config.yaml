@@ -1,0 +1,108 @@
+# Dataset Configuration: Defines all data sources for different behaviors.
+# This YAML is referenced by the pipeline to know what data to download/load
+# for each behavior (refusal, hallucination, toxicity, etc).
+# Add new behaviors by adding a top-level key with calibration + alignment sections.
+
+# Refusal Bypass
+refusal:
+  description: Bypass safety training to respond to harmful prompts
+  
+  calibration:
+    - source: wikitext
+      split: train
+      n_samples: 200
+      role: reasoning
+      description: General language understanding
+    
+    - source: gsm8k
+      split: train
+      n_samples: 200
+      role: reasoning
+      description: Math reasoning (multi-step)
+    
+    - source: tatsu-lab/alpaca
+      n_samples: 250
+      role: instruction
+      description: Instruction following
+    
+    - source: bigcode/starcoderdata
+      split: train
+      n_samples: 150
+      role: reasoning
+      description: Code generation and logic
+    
+    - source: openwebtext
+      split: train
+      n_samples: 150
+      role: reasoning
+      description: Long-range coherence
+  
+  alignment:
+    harmful:
+      - source: walledai/AdvBench
+        n_samples: 500
+        prompt_field: prompt
+        description: Adversarial prompts triggering refusal
+    
+    compliant:
+      - source: tatsu-lab/alpaca
+        n_samples: 500
+        prompt_field: instruction
+        description: Safe instruction-following
+      
+      - source: openassistant/oasst1
+        n_samples: 0
+        prompt_field: text
+        description: Diverse benign prompts (fallback)
+
+hallucination:
+  description: Steer model away from factually incorrect outputs
+  
+  calibration:
+    - source: wikipedia
+      split: train
+      n_samples: 500
+      role: factual
+      description: Factually grounded text
+    
+    - source: c4
+      split: en
+      n_samples: 300
+      role: factual
+      description: High-quality web text
+  
+  alignment:
+    truth:
+      - source: truthfulqa
+        split: validation
+        n_samples: 500
+        prompt_field: question
+        description: Questions with ground-truth answers
+    
+    hallucination:
+      - source: AMBIG
+        n_samples: 300
+        prompt_field: ambiguous_question
+        description: Ambiguous questions that trigger hallucinations
+
+toxicity:
+  description: Reduce toxic outputs while maintaining capabilities
+  
+  calibration:
+    - source: wikitext
+      split: train
+      n_samples: 500
+      role: benign
+  
+  alignment:
+    toxic:
+      - source: jigsaw-toxic-comment-classification-challenge
+        n_samples: 500
+        prompt_field: comment_text
+        description: Comments flagged as toxic
+    
+    benign:
+      - source: tatsu-lab/alpaca
+        n_samples: 500
+        prompt_field: instruction
+        description: Non-toxic instructions
