@@ -183,18 +183,16 @@ class Phase1HookLayer10:
             }
             # Use max across all layers for display
             p_refuse = max(self._layer_p_refuses.values())
-            # AND logic: only intervene if ALL layers exceed threshold
-            should_intervene = all(
-                p > self.threshold for p in self._layer_p_refuses.values()
-            )
             self.last_p_refuse = p_refuse
         else:
             # OR logic (default)
             p_refuse = self.probe(h)  # [batch, 1]
             self.last_p_refuse = float(p_refuse.max().item())
-            should_intervene = self.last_p_refuse > self.threshold
 
         self.last_delta_norm = 0.0  # reset each call
+
+        # EMPIRICAL TEST: Always intervene (skip threshold check)
+        should_intervene = True
 
         if not should_intervene:
             self.intervened = False
