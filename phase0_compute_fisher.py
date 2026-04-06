@@ -133,6 +133,11 @@ def estimate_empirical_fisher_diagonal(
             fisher_scores[layer_idx] += score
 
         model.zero_grad()
+
+        # Clear GPU cache to prevent OOM
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         n_processed += len(batch)
         if n_processed % 100 == 0:
             print(f"    Fisher: {n_processed}/{len(prompts)} prompts processed")
@@ -360,7 +365,9 @@ def main():
         help="Sacred Subspace variance threshold",
     )
     parser.add_argument("--max_seq_len", type=int, default=1024)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument(
+        "--batch_size", type=int, default=1, help="Reduce to 1 for 24GB GPUs"
+    )
     parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
 
