@@ -17,7 +17,7 @@ from typing import Optional
 import json
 import yaml
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from axiom_config import AxiomConfig
 from model_registry import ModelRegistry
@@ -48,9 +48,7 @@ class AxiomPipeline:
         # Detect model architecture
         print("[2/2] Auto-detecting model architecture...")
         try:
-            temp_config = AutoModelForCausalLM.from_pretrained(
-                self.config.model_name, config_only=True
-            )
+            temp_config = AutoConfig.from_pretrained(self.config.model_name)
             self.model_info = ModelRegistry.get(self.config.model_name, temp_config)
             print(f"  ✓ Detected: {self.model_info.family} architecture")
             print(f"  ✓ Default layers: {self.model_info.default_target_layers}")
