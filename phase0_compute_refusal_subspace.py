@@ -352,7 +352,7 @@ def main():
         print(f"  Layer {l}: PR={pr:.2f} ({regime}), k={k} directions")
 
     print("\nPhase 0 fully complete. Proceed to Phase 1 hooks.")
-    print(f"Checkpoint directory: {ckpt_dir}")
+    print(f"Checkpoint directory: {refusal_dir}")
 
 
 if __name__ == "__main__":
