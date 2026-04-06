@@ -7,23 +7,23 @@ Extracts the Sacred Subspace basis S and projector P = I - S^T S.
 
 Requires Phase 0 data collection to be complete first.
 
+Model-agnostic: Works on any transformer via ModelRegistry.
+
 Usage:
     python phase0_compute_fisher.py \
         --model meta-llama/Meta-Llama-3-8B-Instruct \
-        --data_dir ../data/calibration \
-        --output_dir ../axiom_checkpoints/llama3_8b_v1 \
+        --target_behavior refusal \
         --target_layers auto \
         --variance_threshold 0.99 \
         --max_seq_len 1024 \
         --batch_size 4
 
-Outputs (in output_dir):
-    sacred_subspace/
-        fisher_diagonal_l{idx}.pt       # raw EFIM diagonal per layer
-        sacred_basis_l{idx}.pt          # S matrix [k, d_model]
-        sacred_projector_l{idx}.pt      # P = I - S^T S  [d, d]
-    layer_importance.json               # Fisher trace scores per layer
-    config.json                         # Run configuration (reproducibility)
+Outputs (in checkpoint_dir/phase_0/sacred_subspace/):
+    fisher_diagonal_l{idx}.pt       # raw EFIM diagonal per layer
+    sacred_basis_l{idx}.pt          # S matrix [k, d_model]
+    sacred_projector_l{idx}.pt      # P = I - S^T S  [d, d]
+    layer_importance.json           # Fisher trace scores per layer
+    config.json                     # Run configuration (reproducibility)
 """
 
 import json
@@ -36,10 +36,14 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
+from axiom_config import AxiomConfig
+from model_registry import ModelRegistry
+
 
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
+
 
 def load_jsonl(path: Path) -> list[dict]:
     with open(path) as f:
@@ -52,7 +56,7 @@ def adaptive_rank(singular_values: torch.Tensor, threshold: float = 0.99) -> int
     threshold=0.95 for intervention subspaces.
     threshold=0.99 for Sacred Subspace (higher fidelity — this is what we protect).
     """
-    sv2 = singular_values ** 2
+    sv2 = singular_values**2
     explained = torch.cumsum(sv2, dim=0) / sv2.sum()
     k = int((explained < threshold).sum()) + 1
     return max(1, min(k, len(singular_values)))
@@ -65,7 +69,7 @@ def estimate_empirical_fisher_diagonal(
     target_layer_indices: list[int],
     max_seq_len: int = 1024,
     batch_size: int = 4,
-    device: str = "cuda"
+    device: str = "cuda",
 ) -> dict[int, torch.Tensor]:
     """
     Computes the diagonal of the Empirical Fisher Information Matrix per layer.
@@ -92,10 +96,13 @@ def estimate_empirical_fisher_diagonal(
 
     n_processed = 0
     for i in range(0, len(prompts), batch_size):
-        batch = prompts[i:i + batch_size]
+        batch = prompts[i : i + batch_size]
         enc = tokenizer(
-            batch, return_tensors="pt", padding=True,
-            truncation=True, max_length=max_seq_len
+            batch,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_seq_len,
         ).to(device)
 
         model.zero_grad()
@@ -104,9 +111,7 @@ def estimate_empirical_fisher_diagonal(
             logits = outputs.logits  # [B, seq, vocab]
             log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
             target_ids = enc["input_ids"][:, 1:]
-            nll = -log_probs.gather(
-                2, target_ids.unsqueeze(-1)
-            ).squeeze(-1)
+            nll = -log_probs.gather(2, target_ids.unsqueeze(-1)).squeeze(-1)
             mask = enc["attention_mask"][:, 1:].float()
             loss = (nll * mask).sum() / mask.sum()
 
@@ -145,14 +150,11 @@ def compute_layer_importance(fisher_diag: dict[int, torch.Tensor]) -> dict[int, 
     Layer importance = Fisher score (sum of squared LayerNorm gradients).
     Higher = loss is more sensitive to this layer = better intervention target.
     """
-    return {layer_idx: score.sum().item()
-            for layer_idx, score in fisher_diag.items()}
+    return {layer_idx: score.sum().item() for layer_idx, score in fisher_diag.items()}
 
 
 def select_target_layers(
-    importance: dict[int, float],
-    n_layers: int,
-    n_targets: int = 3
+    importance: dict[int, float], n_layers: int, n_targets: int = 3
 ) -> list[int]:
     """
     Select target intervention layers.
@@ -162,8 +164,8 @@ def select_target_layers(
     third = n_layers // 3
     thirds = [
         [i for i in range(0, third) if i in importance],
-        [i for i in range(third, 2*third) if i in importance],
-        [i for i in range(2*third, n_layers) if i in importance],
+        [i for i in range(third, 2 * third) if i in importance],
+        [i for i in range(2 * third, n_layers) if i in importance],
     ]
     targets = []
     for segment in thirds:
@@ -182,9 +184,7 @@ def select_target_layers(
 
 
 def build_sacred_subspace_from_fisher(
-    fisher_diag: torch.Tensor,
-    d_model: int,
-    threshold: float = 0.99
+    fisher_diag: torch.Tensor, d_model: int, threshold: float = 0.99
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Build Sacred Subspace basis S and projector P.
@@ -223,6 +223,7 @@ def build_sacred_subspace_from_fisher(
 # Refusal subspace (cPCA) — also computed in Phase 0 alongside Fisher
 # ---------------------------------------------------------------------------
 
+
 def collect_activations(
     model,
     prompts: list[str],
@@ -230,7 +231,7 @@ def collect_activations(
     target_layer_indices: list[int],
     max_seq_len: int = 1024,
     batch_size: int = 4,
-    device: str = "cuda"
+    device: str = "cuda",
 ) -> dict[int, torch.Tensor]:
     """
     Collect post-attention residual stream activations (mean-pooled over sequence).
@@ -246,34 +247,35 @@ def collect_activations(
             h = output[0].detach().float()
             # Mean pool over non-padding positions
             activations[layer_idx].append(h.mean(dim=1).cpu())
+
         return hook_fn
 
     for layer_idx in target_layer_indices:
-        h = model.model.layers[layer_idx].register_forward_hook(
-            make_hook(layer_idx)
-        )
+        h = model.model.layers[layer_idx].register_forward_hook(make_hook(layer_idx))
         hooks.append(h)
 
     with torch.no_grad():
         for i in range(0, len(prompts), batch_size):
-            batch = prompts[i:i + batch_size]
+            batch = prompts[i : i + batch_size]
             enc = tokenizer(
-                batch, return_tensors="pt", padding=True,
-                truncation=True, max_length=max_seq_len
+                batch,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_seq_len,
             ).to(device)
             model(**enc)
 
     for h in hooks:
         h.remove()
 
-    return {layer_idx: torch.cat(acts, dim=0)
-            for layer_idx, acts in activations.items()}
+    return {
+        layer_idx: torch.cat(acts, dim=0) for layer_idx, acts in activations.items()
+    }
 
 
 def compute_cpca_refusal_directions(
-    h_r: np.ndarray,
-    h_c: np.ndarray,
-    threshold: float = 0.95
+    h_r: np.ndarray, h_c: np.ndarray, threshold: float = 0.95
 ) -> tuple[np.ndarray, float]:
     """
     Contrastive PCA via generalized eigenvalue problem.
@@ -296,15 +298,16 @@ def compute_cpca_refusal_directions(
     # Participation Ratio (diagnostic)
     eigvals_r = np.linalg.eigvalsh(Sigma_r)[::-1]
     eigvals_r = np.maximum(eigvals_r, 0)
-    PR = float((eigvals_r.sum() ** 2) / (eigvals_r ** 2).sum())
+    PR = float((eigvals_r.sum() ** 2) / (eigvals_r**2).sum())
 
     # Generalized eigenvalue problem: (Sigma_r - lambda * Sigma_c) v = 0
     # eigh returns eigenvalues in ascending order
     d = Sigma_r.shape[0]
     try:
         eigvals, eigvecs = eigh(
-            Sigma_r, Sigma_c,
-            subset_by_index=[d - min(d, 256), d - 1]  # top 256 max
+            Sigma_r,
+            Sigma_c,
+            subset_by_index=[d - min(d, 256), d - 1],  # top 256 max
         )
     except Exception:
         # Fallback: standard eigendecomposition if Sigma_c is ill-conditioned
@@ -316,9 +319,7 @@ def compute_cpca_refusal_directions(
 
     # Adaptive rank at 95% threshold
     ev_pos = np.maximum(eigvals, 0)
-    k = int(np.searchsorted(
-        np.cumsum(ev_pos) / (ev_pos.sum() + 1e-12), threshold
-    )) + 1
+    k = int(np.searchsorted(np.cumsum(ev_pos) / (ev_pos.sum() + 1e-12), threshold)) + 1
     k = max(1, min(k, len(eigvals)))
 
     directions = eigvecs[:, :k].T.copy()  # [k, d]
@@ -329,33 +330,64 @@ def compute_cpca_refusal_directions(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str,
-                        default="meta-llama/Meta-Llama-3-8B-Instruct")
-    parser.add_argument("--data_dir", type=str, default="../data")
-    parser.add_argument("--output_dir", type=str,
-                        default="../axiom_checkpoints/llama3_8b_v1")
-    parser.add_argument("--target_layers", type=str, default="auto",
-                        help="Comma-separated layer indices, or 'auto'")
-    parser.add_argument("--variance_threshold", type=float, default=0.99)
+    parser = argparse.ArgumentParser(
+        description="AXIOM Phase 0: Fisher + Sacred Subspace"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="meta-llama/Meta-Llama-3-8B-Instruct",
+        help="HuggingFace model ID",
+    )
+    parser.add_argument(
+        "--target_behavior",
+        type=str,
+        default="refusal",
+        help="Target behavior: refusal, hallucination, toxicity",
+    )
+    parser.add_argument(
+        "--target_layers",
+        type=str,
+        default="auto",
+        help="Comma-separated layer indices, or 'auto'",
+    )
+    parser.add_argument(
+        "--variance_threshold",
+        type=float,
+        default=0.99,
+        help="Sacred Subspace variance threshold",
+    )
     parser.add_argument("--max_seq_len", type=int, default=1024)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
 
-    out_dir = Path(args.output_dir)
-    sacred_dir = out_dir / "sacred_subspace"
+    # --- Create config ---
+    config = AxiomConfig(
+        model_name=args.model,
+        target_behavior=args.target_behavior,
+        max_seq_len=args.max_seq_len,
+        batch_size=args.batch_size,
+        variance_threshold_sacred=args.variance_threshold,
+    )
+
+    # --- Setup directories ---
+    phase0_dir = config.get_checkpoint_dir(phase=0)
+    calib_dir = phase0_dir / "calibration"
+    sacred_dir = phase0_dir / "sacred_subspace"
     sacred_dir.mkdir(parents=True, exist_ok=True)
-    data_dir = Path(args.data_dir)
 
     print(f"\n=== AXIOM Phase 0: Fisher + Sacred Subspace ===")
     print(f"Model: {args.model}")
-    print(f"Output: {out_dir}\n")
+    print(f"Behavior: {args.target_behavior}")
+    print(f"Output: {sacred_dir}\n")
 
     # --- Load model ---
     print("[1/5] Loading model...")
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -367,24 +399,27 @@ def main():
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,   # extra 0.4-bit compression, free
+            bnb_4bit_use_double_quant=True,  # extra 0.4-bit compression, free
         )
         model = AutoModelForCausalLM.from_pretrained(
-            args.model,
-            quantization_config=bnb_config,
-            device_map="auto"
+            args.model, quantization_config=bnb_config, device_map="auto"
         )
         model.gradient_checkpointing_enable()
-        print("  Loaded in 4-bit NF4 (compute dtype: bfloat16) + gradient checkpointing")
+        print(
+            "  Loaded in 4-bit NF4 (compute dtype: bfloat16) + gradient checkpointing"
+        )
     except Exception as e:
-        print(f"  4-bit load failed ({e}), falling back to bfloat16 + gradient checkpointing")
+        print(
+            f"  4-bit load failed ({e}), falling back to bfloat16 + gradient checkpointing"
+        )
         model = AutoModelForCausalLM.from_pretrained(
-            args.model,
-            dtype=torch.bfloat16,
-            device_map="auto"
+            args.model, dtype=torch.bfloat16, device_map="auto"
         )
         model.gradient_checkpointing_enable()
         print("  Loaded in bfloat16 + gradient checkpointing")
+
+    # --- Get model info via ModelRegistry ---
+    model_info = ModelRegistry.get(args.model, model.config)
     n_layers = model.config.num_hidden_layers
     d_model = model.config.hidden_size
     print(f"  Layers: {n_layers}, d_model: {d_model}")
@@ -397,8 +432,7 @@ def main():
         candidate_layers = [int(x) for x in args.target_layers.split(",")]
 
     # --- Load calibration data ---
-    print("\n[2/5] Loading calibration data (Sacred Subspace triad)...")
-    calib_dir = data_dir / "calibration"
+    print(f"\n[2/5] Loading calibration data (Sacred Subspace triad)...")
     calib_files = list(calib_dir.glob("*.jsonl"))
     calib_prompts = []
     for f in calib_files:
@@ -409,7 +443,9 @@ def main():
                 if line:
                     records.append(json.loads(line))
         calib_prompts += [r["text"] for r in records]
-    print(f"  Loaded {len(calib_prompts)} calibration prompts from {len(calib_files)} files")
+    print(
+        f"  Loaded {len(calib_prompts)} calibration prompts from {len(calib_files)} files"
+    )
 
     # --- Compute Empirical Fisher diagonal ---
     print("\n[3/5] Computing Empirical Fisher diagonal (EFIM)...")
@@ -423,9 +459,9 @@ def main():
         target_layer_indices=candidate_layers,
         max_seq_len=args.max_seq_len,
         batch_size=args.batch_size,
-        device=args.device
+        device=args.device,
     )
-    print(f"  Done in {time.time()-t0:.1f}s")
+    print(f"  Done in {time.time() - t0:.1f}s")
 
     # Save raw Fisher diagonals
     for layer_idx, diag in fisher_diag.items():
@@ -434,7 +470,8 @@ def main():
     # --- Layer importance + target selection ---
     print("\n[4/5] Computing layer importance + selecting target layers...")
     importance = compute_layer_importance(fisher_diag)
-    target_layers = select_target_layers(importance, n_layers, n_targets=3)
+    n_targets = config.n_target_layers
+    target_layers = select_target_layers(importance, n_layers, n_targets=n_targets)
     print(f"  Selected target layers: {target_layers}")
     print("  Top 5 by Fisher trace:")
     for l, score in sorted(importance.items(), key=lambda x: -x[1])[:5]:
@@ -446,9 +483,9 @@ def main():
         "importance": {str(k): v for k, v in importance.items()},
         "target_layers": target_layers,
         "n_layers": n_layers,
-        "d_model": d_model
+        "d_model": d_model,
     }
-    with open(out_dir / "layer_importance.json", "w") as f:
+    with open(sacred_dir / ".." / "layer_importance.json", "w") as f:
         json.dump(layer_info, f, indent=2)
 
     # --- Build Sacred Subspace for target layers ---
@@ -459,23 +496,25 @@ def main():
             score, d_model, threshold=args.variance_threshold
         )
         k = S.shape[0]
-        print(f"  Layer {layer_idx:2d}: k={k} dims protected, Fisher score={score.item():.6f}")
+        print(
+            f"  Layer {layer_idx:2d}: k={k} dims protected, Fisher score={score.item():.6f}"
+        )
         torch.save(S, sacred_dir / f"sacred_basis_l{layer_idx:02d}.pt")
         torch.save(P, sacred_dir / f"sacred_projector_l{layer_idx:02d}.pt")
 
     # --- Save config for reproducibility ---
-    config = {
+    config_dict = {
         "model": args.model,
+        "target_behavior": args.target_behavior,
         "n_calibration_prompts": len(calib_prompts),
         "target_layers": target_layers,
         "variance_threshold_sacred": args.variance_threshold,
-        "variance_threshold_refusal": 0.95,
         "max_seq_len": args.max_seq_len,
         "batch_size": args.batch_size,
-        "note_efim": "Uses diagonal EFIM (squared gradients), not Hutchinson estimator"
+        "note_efim": "Uses diagonal EFIM (squared gradients), not Hutchinson estimator",
     }
-    with open(out_dir / "config.json", "w") as f:
-        json.dump(config, f, indent=2)
+    with open(sacred_dir / ".." / "config.json", "w") as f:
+        json.dump(config_dict, f, indent=2)
 
     print(f"\n=== Phase 0 (Fisher) Complete ===")
     print(f"Checkpoints: {sacred_dir}")

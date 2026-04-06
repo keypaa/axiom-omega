@@ -6,15 +6,16 @@ refusal directions for each target layer.
 
 Run AFTER phase0_compute_fisher.py (needs layer_importance.json for target layers).
 
+Model-agnostic: Works on any transformer via ModelRegistry.
+
 Usage:
     python phase0_compute_refusal_subspace.py \
         --model meta-llama/Meta-Llama-3-8B-Instruct \
-        --data_dir ../data/alignment \
-        --checkpoint_dir ../axiom_checkpoints/llama3_8b_v1 \
+        --target_behavior refusal \
         --max_seq_len 1024 \
         --batch_size 4
 
-Outputs (in checkpoint_dir/refusal_subspace/):
+Outputs (in checkpoint_dir/phase_0/refusal_subspace/):
     activations_refusal_l{idx}.pt       # [N, d_model] raw activations D_r
     activations_compliant_l{idx}.pt     # [N, d_model] raw activations D_c
     refusal_directions_l{idx}.pt        # [k, d_model] cPCA directions
@@ -30,6 +31,9 @@ import torch
 import numpy as np
 from scipy.linalg import eigh
 
+from axiom_config import AxiomConfig
+from model_registry import ModelRegistry
+
 
 def load_jsonl(path: Path) -> list[dict]:
     with open(path) as f:
@@ -37,7 +41,7 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def adaptive_rank(singular_values: np.ndarray, threshold: float = 0.95) -> int:
-    sv2 = singular_values ** 2
+    sv2 = singular_values**2
     total = sv2.sum()
     if total < 1e-12:
         return 1
@@ -53,7 +57,7 @@ def collect_activations_for_split(
     target_layers: list[int],
     max_seq_len: int,
     batch_size: int,
-    device: str
+    device: str,
 ) -> dict[int, torch.Tensor]:
     """Collect mean-pooled residual stream per layer."""
     model.eval()
@@ -68,26 +72,28 @@ def collect_activations_for_split(
             # With batch_size=1 this gives [1, d_model] per prompt
             # torch.cat(..., dim=0) then stacks to [N_prompts, d_model]
             if h.dim() == 3:
-                pooled = h.mean(dim=1)          # [batch, d_model]
+                pooled = h.mean(dim=1)  # [batch, d_model]
             elif h.dim() == 2:
-                pooled = h                       # already [batch, d_model]
+                pooled = h  # already [batch, d_model]
             else:
-                pooled = h.unsqueeze(0)          # edge case
-            acts[layer_idx].append(pooled.cpu()) # each item: [1, d_model]
+                pooled = h.unsqueeze(0)  # edge case
+            acts[layer_idx].append(pooled.cpu())  # each item: [1, d_model]
+
         return fn
 
     for layer_idx in target_layers:
-        h = model.model.layers[layer_idx].register_forward_hook(
-            make_hook(layer_idx)
-        )
+        h = model.model.layers[layer_idx].register_forward_hook(make_hook(layer_idx))
         hooks.append(h)
 
     with torch.no_grad():
         for i in range(0, len(prompts), batch_size):
-            batch = prompts[i:i + batch_size]
+            batch = prompts[i : i + batch_size]
             enc = tokenizer(
-                batch, return_tensors="pt", padding=True,
-                truncation=True, max_length=max_seq_len
+                batch,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_seq_len,
             ).to(device)
             model(**enc)
             if (i // batch_size) % 10 == 0:
@@ -99,16 +105,14 @@ def collect_activations_for_split(
     # Each item in acts[l] is [batch, d_model] — cat along dim=0 gives [N_prompts, d_model]
     result = {}
     for l, v in acts.items():
-        stacked = torch.cat(v, dim=0)   # [N_prompts, d_model]
+        stacked = torch.cat(v, dim=0)  # [N_prompts, d_model]
         assert stacked.dim() == 2, f"Layer {l}: expected 2D [N, d], got {stacked.shape}"
         result[l] = stacked
     return result
 
 
 def compute_cpca(
-    h_r: np.ndarray,
-    h_c: np.ndarray,
-    threshold: float = 0.95
+    h_r: np.ndarray, h_c: np.ndarray, threshold: float = 0.95
 ) -> tuple[np.ndarray, float]:
     """
     Contrastive PCA via generalized eigenvalue problem.
@@ -125,14 +129,13 @@ def compute_cpca(
     # Participation Ratio (diagnostic)
     eigvals_r = np.linalg.eigvalsh(Sigma_r)[::-1]
     eigvals_r = np.maximum(eigvals_r, 0)
-    PR = float((eigvals_r.sum() ** 2) / ((eigvals_r ** 2).sum() + 1e-12))
+    PR = float((eigvals_r.sum() ** 2) / ((eigvals_r**2).sum() + 1e-12))
 
     d = Sigma_r.shape[0]
     max_components = min(d, 256)
     try:
         eigvals, eigvecs = eigh(
-            Sigma_r, Sigma_c,
-            subset_by_index=[d - max_components, d - 1]
+            Sigma_r, Sigma_c, subset_by_index=[d - max_components, d - 1]
         )
         # eigh returns ascending order; reverse
         eigvals = eigvals[::-1].copy()
@@ -153,36 +156,73 @@ def compute_cpca(
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str,
-                        default="meta-llama/Meta-Llama-3-8B-Instruct")
-    parser.add_argument("--data_dir", type=str, default="../data/alignment")
-    parser.add_argument("--checkpoint_dir", type=str,
-                        default="../axiom_checkpoints/llama3_8b_v1")
+    parser = argparse.ArgumentParser(
+        description="AXIOM Phase 0: Refusal Subspace (cPCA)"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="meta-llama/Meta-Llama-3-8B-Instruct",
+        help="HuggingFace model ID",
+    )
+    parser.add_argument(
+        "--target_behavior",
+        type=str,
+        default="refusal",
+        help="Target behavior: refusal, hallucination, toxicity",
+    )
     parser.add_argument("--max_seq_len", type=int, default=1024)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--variance_threshold", type=float, default=0.95,
-                        help="For refusal subspace (lower than Sacred Subspace)")
-    parser.add_argument("--skip_collection", action="store_true",
-                        help="Skip activation collection and load from disk (reuse previous run)")
+    parser.add_argument(
+        "--variance_threshold",
+        type=float,
+        default=0.95,
+        help="For refusal subspace (lower than Sacred Subspace)",
+    )
+    parser.add_argument(
+        "--skip_collection",
+        action="store_true",
+        help="Skip activation collection and load from disk (reuse previous run)",
+    )
     args = parser.parse_args()
 
-    ckpt_dir = Path(args.checkpoint_dir)
-    refusal_dir = ckpt_dir / "refusal_subspace"
+    # --- Create config ---
+    config = AxiomConfig(
+        model_name=args.model,
+        target_behavior=args.target_behavior,
+        max_seq_len=args.max_seq_len,
+        batch_size=args.batch_size,
+        variance_threshold_refusal=args.variance_threshold,
+    )
+
+    # --- Setup directories ---
+    phase0_dir = config.get_checkpoint_dir(phase=0)
+    align_dir = phase0_dir / "alignment"
+    refusal_dir = phase0_dir / "refusal_subspace"
     refusal_dir.mkdir(parents=True, exist_ok=True)
-    data_dir = Path(args.data_dir)
+
+    print(f"\n=== AXIOM Phase 0: Refusal Subspace (cPCA) ===")
+    print(f"Model: {args.model}")
+    print(f"Behavior: {args.target_behavior}")
+    print(f"Output: {refusal_dir}\n")
 
     # Load target layers from Phase 0 Fisher output
-    with open(ckpt_dir / "layer_importance.json") as f:
+    layer_info_path = phase0_dir / "layer_importance.json"
+    if not layer_info_path.exists():
+        print(f"[ERROR] layer_importance.json not found at {layer_info_path}")
+        print("Run phase0_compute_fisher.py first")
+        return
+
+    with open(layer_info_path) as f:
         layer_info = json.load(f)
     target_layers = layer_info["target_layers"]
-    print(f"\n=== AXIOM Phase 0: Refusal Subspace (cPCA) ===")
     print(f"Target layers: {target_layers}\n")
 
     # Load model
     print("[1/4] Loading model...")
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     tokenizer.pad_token = tokenizer.eos_token
     try:
@@ -200,8 +240,20 @@ def main():
 
     # Load alignment data
     print("\n[2/4] Loading alignment data...")
-    refusal_prompts = [r["text"] for r in load_jsonl(data_dir / "refusal_500.jsonl")]
-    compliant_prompts = [r["text"] for r in load_jsonl(data_dir / "compliant_500.jsonl")]
+    # Find alignment files with "refusal" or "harmful" label
+    refusal_files = list(align_dir.glob("*refusal*.jsonl")) + list(
+        align_dir.glob("*harmful*.jsonl")
+    )
+    compliant_files = list(align_dir.glob("*compliant*.jsonl"))
+
+    refusal_prompts = []
+    for f in refusal_files:
+        refusal_prompts += [r["text"] for r in load_jsonl(f)]
+
+    compliant_prompts = []
+    for f in compliant_files:
+        compliant_prompts += [r["text"] for r in load_jsonl(f)]
+
     print(f"  D_r: {len(refusal_prompts)} refusal prompts")
     print(f"  D_c: {len(compliant_prompts)} compliant prompts")
 
@@ -213,30 +265,50 @@ def main():
             r_path = refusal_dir / f"activations_refusal_l{layer_idx:02d}.pt"
             c_path = refusal_dir / f"activations_compliant_l{layer_idx:02d}.pt"
             if r_path.exists() and c_path.exists():
-                acts_r[layer_idx] = torch.load(r_path, map_location="cpu", weights_only=True)
-                acts_c[layer_idx] = torch.load(c_path, map_location="cpu", weights_only=True)
+                acts_r[layer_idx] = torch.load(
+                    r_path, map_location="cpu", weights_only=True
+                )
+                acts_c[layer_idx] = torch.load(
+                    c_path, map_location="cpu", weights_only=True
+                )
                 print(f"  Layer {layer_idx}: loaded from disk")
             else:
                 print(f"  Layer {layer_idx}: files not found, will collect")
                 args.skip_collection = False
                 break
-    
+
     if not args.skip_collection:
         print("\n[3/4] Collecting activations...")
         print("  D_r (refusal):")
         acts_r = collect_activations_for_split(
-            model, refusal_prompts, tokenizer, target_layers,
-            args.max_seq_len, args.batch_size, args.device
+            model,
+            refusal_prompts,
+            tokenizer,
+            target_layers,
+            args.max_seq_len,
+            args.batch_size,
+            args.device,
         )
         print("  D_c (compliant):")
         acts_c = collect_activations_for_split(
-            model, compliant_prompts, tokenizer, target_layers,
-            args.max_seq_len, args.batch_size, args.device
+            model,
+            compliant_prompts,
+            tokenizer,
+            target_layers,
+            args.max_seq_len,
+            args.batch_size,
+            args.device,
         )
         # Save raw activations
         for layer_idx in target_layers:
-            torch.save(acts_r[layer_idx], refusal_dir / f"activations_refusal_l{layer_idx:02d}.pt")
-            torch.save(acts_c[layer_idx], refusal_dir / f"activations_compliant_l{layer_idx:02d}.pt")
+            torch.save(
+                acts_r[layer_idx],
+                refusal_dir / f"activations_refusal_l{layer_idx:02d}.pt",
+            )
+            torch.save(
+                acts_c[layer_idx],
+                refusal_dir / f"activations_compliant_l{layer_idx:02d}.pt",
+            )
 
     # Compute cPCA
     print("\n[4/4] Computing Contrastive PCA (generalized eigenvalue problem)...")
@@ -251,7 +323,9 @@ def main():
         if h_c.dim() == 1:
             h_c = h_c.unsqueeze(0)
 
-        print(f"  Layer {layer_idx}: h_r shape={tuple(h_r.shape)}, h_c shape={tuple(h_c.shape)}")
+        print(
+            f"  Layer {layer_idx}: h_r shape={tuple(h_r.shape)}, h_c shape={tuple(h_c.shape)}"
+        )
 
         h_r = h_r.numpy()
         h_c = h_c.numpy()
@@ -261,7 +335,7 @@ def main():
 
         torch.save(
             torch.tensor(directions, dtype=torch.float32),
-            refusal_dir / f"refusal_directions_l{layer_idx:02d}.pt"
+            refusal_dir / f"refusal_directions_l{layer_idx:02d}.pt",
         )
         pr_report[str(layer_idx)] = {"PR": PR, "k": k}
 

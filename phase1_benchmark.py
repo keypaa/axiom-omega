@@ -2,6 +2,7 @@
 AXIOM-Ω Phase 1 Benchmark
 ==========================
 Tests refusal bypass rate and false positive rate on multiple prompts.
+Model-agnostic: Works on any transformer via ModelRegistry.
 """
 
 import argparse
@@ -12,6 +13,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+from axiom_config import AxiomConfig
+from model_registry import ModelRegistry
 
 
 class RefusalProbe(nn.Module):
@@ -160,22 +164,61 @@ def is_refusal(response: str) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="meta-llama/Meta-Llama-3-8B-Instruct")
-    parser.add_argument("--checkpoint_dir", default="./axiom_checkpoints/llama3_8b_v1")
-    parser.add_argument("--target_layers", default="10,31")
+    parser = argparse.ArgumentParser(description="AXIOM Phase 1 Benchmark")
+    parser.add_argument(
+        "--model",
+        default="meta-llama/Meta-Llama-3-8B-Instruct",
+        help="HuggingFace model ID",
+    )
+    parser.add_argument(
+        "--target_behavior",
+        default="refusal",
+        help="Target behavior: refusal, hallucination, toxicity",
+    )
+    parser.add_argument(
+        "--target_layers",
+        default="10,31",
+        help="Comma-separated layer indices (or 'auto' to load from phase 0)",
+    )
     parser.add_argument("--lambda_scale", type=float, default=40.0)
     parser.add_argument("--magnitude_cap", type=float, default=0.25)
     parser.add_argument("--threshold", type=float, default=0.55)
     parser.add_argument("--logic", default="or", choices=["or", "and"])
     args = parser.parse_args()
 
-    target_layers = [int(x.strip()) for x in args.target_layers.split(",")]
-    ckpt = Path(args.checkpoint_dir)
-    refusal_dir = ckpt / "refusal_subspace"
-    sacred_dir = ckpt / "sacred_subspace"
+    # --- Create config ---
+    config = AxiomConfig(
+        model_name=args.model,
+        target_behavior=args.target_behavior,
+        lambda_scale=args.lambda_scale,
+        magnitude_cap=args.magnitude_cap,
+        threshold=args.threshold,
+    )
+
+    # --- Setup directories ---
+    phase0_dir = config.get_checkpoint_dir(phase=0)
+    phase1_dir = config.get_checkpoint_dir(phase=1)
+    refusal_dir = phase0_dir / "refusal_subspace"
+    sacred_dir = phase0_dir / "sacred_subspace"
+
+    # Load target layers
+    if args.target_layers == "auto":
+        layer_info_path = phase0_dir / "layer_importance.json"
+        if layer_info_path.exists():
+            with open(layer_info_path) as f:
+                layer_info = json.load(f)
+            target_layers = layer_info["target_layers"]
+        else:
+            print(
+                f"[ERROR] layer_importance.json not found. Run Phase 0 first or specify --target_layers"
+            )
+            return
+    else:
+        target_layers = [int(x.strip()) for x in args.target_layers.split(",")]
 
     print(f"=== AXIOM Phase 1 Benchmark ===")
+    print(f"Model: {args.model}")
+    print(f"Behavior: {args.target_behavior}")
     print(
         f"Layers: {target_layers}, Lambda: {args.lambda_scale}, Threshold: {args.threshold}, Logic: {args.logic}\n"
     )
@@ -203,9 +246,12 @@ def main():
     model.eval()
     device = next(model.parameters()).device
 
+    # Get model info via ModelRegistry
+    model_info = ModelRegistry.get(args.model, model.config)
+
     # Load probes
     print("[2/4] Loading probes...")
-    ensemble_probe = load_probes(args.checkpoint_dir, target_layers, device)
+    ensemble_probe = load_probes(phase1_dir, target_layers, device)
 
     # Install hooks
     print("[3/4] Installing hooks...")
@@ -233,7 +279,9 @@ def main():
             logic=args.logic,
             ensemble_probe=ensemble_probe,
         )
-        handle = model.model.layers[layer].register_forward_hook(hook_obj)
+        # Use ModelRegistry to get the correct layer module
+        layer_module = model_info.get_layer_module(model, layer)
+        handle = layer_module.register_forward_hook(hook_obj)
         hooks.append(handle)
         hook_objects[layer] = hook_obj
 

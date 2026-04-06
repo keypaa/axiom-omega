@@ -5,6 +5,8 @@ Uses the activations already collected in Phase 0.
 Trains a linear probe on Layer 10 (PR=1.00, rank-1 refusal signal).
 Installs the Phase 1 hook and runs a live AdvBench prompt.
 
+Model-agnostic: Works on any transformer via ModelRegistry.
+
 Key insight from Phase 0:
   Layer 10: PR=1.00 → refusal is rank-1 at this layer
   → use k=1 cPCA direction (first eigenvector only)
@@ -13,7 +15,7 @@ Key insight from Phase 0:
 Usage:
     python phase1_train_and_test.py \
         --model meta-llama/Meta-Llama-3-8B-Instruct \
-        --checkpoint_dir ./axiom_checkpoints/llama3_8b_v1 \
+        --target_behavior refusal \
         --target_layer 10 \
         --lambda_scale 1.0 \
         --threshold 0.5
@@ -27,6 +29,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+
+from axiom_config import AxiomConfig
+from model_registry import ModelRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -234,12 +239,20 @@ class Phase1HookLayer10:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--model", type=str, default="meta-llama/Meta-Llama-3-8B-Instruct"
+    parser = argparse.ArgumentParser(
+        description="AXIOM Phase 1: Train Probe + Live Test"
     )
     parser.add_argument(
-        "--checkpoint_dir", type=str, default="./axiom_checkpoints/llama3_8b_v1"
+        "--model",
+        type=str,
+        default="meta-llama/Meta-Llama-3-8B-Instruct",
+        help="HuggingFace model ID",
+    )
+    parser.add_argument(
+        "--target_behavior",
+        type=str,
+        default="refusal",
+        help="Target behavior: refusal, hallucination, toxicity",
     )
     parser.add_argument(
         "--target_layers",
@@ -257,18 +270,32 @@ def main():
         type=str,
         default="or",
         choices=["or", "and"],
-        help="Intervention logic: 'or' = any layer exceeds threshold, 'and' = all layers must exceed threshold",
+        help="Intervention logic: 'or' = any layer, 'and' = all layers",
     )
     args = parser.parse_args()
 
     target_layers = [int(x.strip()) for x in args.target_layers.split(",")]
 
-    ckpt = Path(args.checkpoint_dir)
-    refusal_dir = ckpt / "refusal_subspace"
-    sacred_dir = ckpt / "sacred_subspace"
+    # --- Create config ---
+    config = AxiomConfig(
+        model_name=args.model,
+        target_behavior=args.target_behavior,
+        target_layers=target_layers,
+        lambda_scale=args.lambda_scale,
+        threshold=args.threshold,
+        magnitude_cap=args.magnitude_cap,
+    )
+
+    # --- Setup directories ---
+    phase0_dir = config.get_checkpoint_dir(phase=0)
+    phase1_dir = config.get_checkpoint_dir(phase=1)
+    refusal_dir = phase0_dir / "refusal_subspace"
+    sacred_dir = phase0_dir / "sacred_subspace"
 
     # --- Load Phase 0 outputs for each target layer ---
     print(f"\n=== AXIOM Phase 1: Multi-Layer Intervention ===")
+    print(f"Model: {args.model}")
+    print(f"Behavior: {args.target_behavior}")
     print(f"Target layers: {target_layers}\n")
     print("[1/5] Loading Phase 0 checkpoints for all layers...")
 
@@ -403,6 +430,9 @@ def main():
 
     device = next(model.parameters()).device
 
+    # Get model info via ModelRegistry
+    model_info = ModelRegistry.get(args.model, model.config)
+
     # Move probes to device
     ensemble_probe = ensemble_probe.to(device)
     for probe in probes.values():
@@ -430,7 +460,9 @@ def main():
             logic=args.logic,
             ensemble_probe=ensemble_probe,
         )
-        handle = model.model.layers[layer].register_forward_hook(hook_obj)
+        # Use ModelRegistry to get the correct layer module
+        layer_module = model_info.get_layer_module(model, layer)
+        handle = layer_module.register_forward_hook(hook_obj)
         hooks.append(handle)
         hook_objects[layer] = hook_obj
         print(f"    Installed hook on Layer {layer}")
