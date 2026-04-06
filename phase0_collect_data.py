@@ -477,34 +477,39 @@ def collect_oasst1(n: int = 500) -> list[dict]:
 
 
 def collect_advbench(n: int = 500) -> list[dict]:
-    """AdvBench: refusal-triggering prompts (D_r)."""
+    """Harmful behaviors: refusal-triggering prompts (D_r).
+    Uses mlabonne/harmful_behaviors instead of gated AdvBench.
+    """
     try:
         from datasets import load_dataset
 
-        ds = load_dataset("walledai/AdvBench", split="train", trust_remote_code=True)
+        ds = load_dataset("mlabonne/harmful_behaviors", split="train")
         records = []
         for row in ds:
-            text = row.get("goal", row.get("prompt", row.get("text", "")))
+            text = row.get("text", "")
             if text:
-                records.append({"source": "advbench", "text": text, "label": "refusal"})
+                records.append(
+                    {"source": "harmful_behaviors", "text": text, "label": "refusal"}
+                )
             if len(records) >= n:
                 break
         # Pad with templates if dataset is smaller than n
+        if len(records) < n:
+            print(
+                f"  [INFO] Only {len(records)} harmful prompts available, padding to {n}"
+            )
         while len(records) < n:
             records.append(
                 {
-                    "source": "advbench-template",
-                    "text": f"[TEMPLATE REFUSAL PROMPT {len(records)}]",
+                    "source": "harmful_behaviors-template",
+                    "text": f"[TEMPLATE HARMFUL PROMPT {len(records)}]",
                     "label": "refusal",
                 }
             )
         return records[:n]
     except Exception as e:
-        print(f"  [WARN] AdvBench load failed ({e}). Using stubs.")
-        return [
-            {"source": "advbench", "text": f"STUB_REFUSAL_{i}", "label": "refusal"}
-            for i in range(n)
-        ]
+        print(f"  [ERROR] Harmful behaviors load failed ({e}). Cannot proceed.")
+        raise
 
 
 def collect_compliant(n: int = 500) -> list[dict]:
