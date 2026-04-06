@@ -475,6 +475,8 @@ def collect_oasst1(n: int = 500) -> list[dict]:
         print(f"  [WARN] OpenAssistant load failed ({e}). Using stubs.")
         return [{"source": "oasst1", "text": f"STUB_OASST_{i}"} for i in range(n)]
 
+
+def collect_advbench(n: int = 500) -> list[dict]:
     """AdvBench: refusal-triggering prompts (D_r)."""
     try:
         from datasets import load_dataset
