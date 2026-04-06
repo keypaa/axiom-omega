@@ -107,12 +107,16 @@ class Phase1HookLayer10:
         return h_new
 
 
-def load_probes(checkpoint_dir, target_layers, device):
+def load_probes(checkpoint_dir, target_layers, device, phase_0_dir=None):
+    # If phase_0_dir not specified, assume checkpoint_dir contains both
+    if phase_0_dir is None:
+        phase_0_dir = checkpoint_dir
+
     probes = {}
     for layer in target_layers:
         probe_path = Path(checkpoint_dir) / f"refusal_probe_l{layer:02d}.pt"
         h_r = torch.load(
-            Path(checkpoint_dir)
+            Path(phase_0_dir)
             / "refusal_subspace"
             / f"activations_refusal_l{layer:02d}.pt",
             map_location="cpu",
@@ -285,6 +289,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="meta-llama/Meta-Llama-3-8B-Instruct")
     parser.add_argument("--checkpoint_dir", default="./axiom_checkpoints/llama3_8b_v1")
+    parser.add_argument(
+        "--phase_0_dir",
+        default=None,
+        help="Path to phase_0 dir for activations (if different from checkpoint_dir)",
+    )
     parser.add_argument("--data_dir", default="./data")
     parser.add_argument("--target_layers", default="10,31")
     parser.add_argument("--lambda_scale", type=float, default=40.0)
@@ -298,8 +307,11 @@ def main():
 
     target_layers = [int(x.strip()) for x in args.target_layers.split(",")]
     ckpt = Path(args.checkpoint_dir)
-    refusal_dir = ckpt / "refusal_subspace"
-    sacred_dir = ckpt / "sacred_subspace"
+    phase_0_checkpoint = Path(
+        args.phase_0_dir if args.phase_0_dir else args.checkpoint_dir
+    )
+    refusal_dir = phase_0_checkpoint / "refusal_subspace"
+    sacred_dir = phase_0_checkpoint / "sacred_subspace"
 
     mode = "BASELINE (no hooks)" if args.skip_hooks else "INTERVENTION"
     print(f"=== Phase 2 Reasoning Benchmark ({mode}) ===")
@@ -332,7 +344,10 @@ def main():
     hooks = []
     if not args.skip_hooks:
         print("[2/4] Installing hooks...")
-        ensemble_probe = load_probes(args.checkpoint_dir, target_layers, device)
+        phase_0_dir = args.phase_0_dir if args.phase_0_dir else args.checkpoint_dir
+        ensemble_probe = load_probes(
+            args.checkpoint_dir, target_layers, device, phase_0_dir
+        )
 
         for layer in target_layers:
             directions = torch.load(
