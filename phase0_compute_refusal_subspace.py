@@ -173,7 +173,11 @@ def main():
     )
     parser.add_argument("--max_seq_len", type=int, default=1024)
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+    )
     parser.add_argument(
         "--variance_threshold",
         type=float,

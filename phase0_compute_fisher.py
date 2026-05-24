@@ -368,7 +368,11 @@ def main():
     parser.add_argument(
         "--batch_size", type=int, default=1, help="Reduce to 1 for 24GB GPUs"
     )
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+    )
     args = parser.parse_args()
 
     # --- Create config ---
