@@ -17,7 +17,8 @@ from typing import Optional
 import json
 import yaml
 
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+import torch
+from transformers import AutoTokenizer, AutoConfig
 
 from axiom_config import AxiomConfig
 from model_registry import ModelRegistry
@@ -31,6 +32,7 @@ class AxiomPipeline:
         self.model = None
         self.tokenizer = None
         self.model_info = None
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self._initialize()
 
     def _initialize(self):
@@ -48,18 +50,19 @@ class AxiomPipeline:
         # Detect model architecture
         print("[2/2] Auto-detecting model architecture...")
         try:
-            temp_config = AutoConfig.from_pretrained(self.config.model_name)
+            temp_config = AutoConfig.from_pretrained(
+                self.config.model_name)
             self.model_info = ModelRegistry.get(self.config.model_name, temp_config)
-            print(f"  [OK] Detected: {self.model_info.family} architecture")
-            print(f"  [OK] Default layers: {self.model_info.default_target_layers}")
+            print(f"  ✓ Detected: {self.model_info.family} architecture")
+            print(f"  ✓ Default layers: {self.model_info.default_target_layers}")
 
             # Use detected layers if not specified
             if self.config.target_layers is None:
                 self.config.target_layers = self.model_info.default_target_layers
-                print(f"  [OK] Using auto-selected layers: {self.config.target_layers}")
+                print(f"  ✓ Using auto-selected layers: {self.config.target_layers}")
 
         except Exception as e:
-            print(f"  [ERROR] Failed to detect architecture: {e}")
+            print(f"  ✗ Failed to detect architecture: {e}")
             sys.exit(1)
 
     def run(self):
@@ -143,6 +146,8 @@ class AxiomPipeline:
             self.config.target_behavior,
             "--target_layers",
             target_layers_str,
+            "--device",
+            self.device,
         ]
         result = subprocess.run(cmd, check=True)
         if result.returncode != 0:
@@ -157,6 +162,8 @@ class AxiomPipeline:
             self.config.model_name,
             "--target_behavior",
             self.config.target_behavior,
+            "--device",
+            self.device,
         ]
         result = subprocess.run(cmd, check=True)
         if result.returncode != 0:

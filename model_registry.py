@@ -186,3 +186,28 @@ ModelRegistry.register(
         ffn_module_name="mlp",
     ),
 )
+
+# Qwen3 variants (Qwen3ForCausalLM, model_type="qwen3")
+ModelRegistry.register(
+    "Qwen/Qwen3-0.6B",
+    ModelInfo(
+        family="qwen",
+        layer_attr="model.layers",
+        hook_point="residual_out",
+        default_target_layers=[9, 19],  # 28 layers → ~1/3, ~2/3
+        attention_module_name="self_attn",
+        ffn_module_name="mlp",
+    ),
+)
+
+ModelRegistry.register(
+    "Qwen/Qwen3-*",  # Wildcard for all Qwen3 variants
+    ModelInfo(
+        family="qwen",
+        layer_attr="model.layers",
+        hook_point="residual_out",
+        default_target_layers=[],  # Will be auto-selected
+        attention_module_name="self_attn",
+        ffn_module_name="mlp",
+    ),
+)
